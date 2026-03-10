@@ -1,6 +1,6 @@
 {
     "name": "clawx",
-    "version": "0.1.24-alpha.7",
+    "version": "0.1.24-alpha.9",
     "pnpm": {
         "onlyBuiltDependencies": [
             "@whiskeysockets/baileys",
@@ -42,6 +42,7 @@
         "postversion": "git push && git push --tags"
     },
     "dependencies": {
+        "@wecom/wecom-openclaw-plugin": "^1.0.6",
         "clawhub": "^0.5.0",
         "electron-store": "^11.0.2",
         "electron-updater": "^6.8.3",

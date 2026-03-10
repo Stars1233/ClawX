@@ -1323,6 +1323,15 @@ function registerGatewayHandlers(
  * For checking package status and channel configuration
  */
 function registerOpenClawHandlers(gatewayManager: GatewayManager): void {
+  const scheduleGatewayChannelRestart = (reason: string): void => {
+    if (gatewayManager.getStatus().state !== 'stopped') {
+      logger.info(`Scheduling Gateway restart after ${reason}`);
+      gatewayManager.debouncedRestart();
+    } else {
+      logger.info(`Gateway is stopped; skip immediate restart after ${reason}`);
+    }
+  };
+
   async function ensureDingTalkPluginInstalled(): Promise<{ installed: boolean; warning?: string }> {
     const targetDir = join(homedir(), '.openclaw', 'extensions', 'dingtalk');
     const targetManifest = join(targetDir, 'openclaw.plugin.json');
@@ -1369,6 +1378,56 @@ function registerOpenClawHandlers(gatewayManager: GatewayManager): void {
       return {
         installed: false,
         warning: 'Failed to install bundled DingTalk plugin mirror',
+      };
+    }
+  }
+
+  async function ensureWeComPluginInstalled(): Promise<{ installed: boolean; warning?: string }> {
+    const targetDir = join(homedir(), '.openclaw', 'extensions', 'wecom');
+    const targetManifest = join(targetDir, 'openclaw.plugin.json');
+
+    if (existsSync(targetManifest)) {
+      logger.info('WeCom plugin already installed from local mirror');
+      return { installed: true };
+    }
+
+    const candidateSources = app.isPackaged
+      ? [
+        join(process.resourcesPath, 'openclaw-plugins', 'wecom'),
+        join(process.resourcesPath, 'app.asar.unpacked', 'build', 'openclaw-plugins', 'wecom'),
+        join(process.resourcesPath, 'app.asar.unpacked', 'openclaw-plugins', 'wecom')
+      ]
+      : [
+        join(app.getAppPath(), 'build', 'openclaw-plugins', 'wecom'),
+        join(process.cwd(), 'build', 'openclaw-plugins', 'wecom'),
+        join(__dirname, '../../build/openclaw-plugins/wecom'),
+      ];
+
+    const sourceDir = candidateSources.find((dir) => existsSync(join(dir, 'openclaw.plugin.json')));
+    if (!sourceDir) {
+      logger.warn('Bundled WeCom plugin mirror not found in candidate paths', { candidateSources });
+      return {
+        installed: false,
+        warning: `Bundled WeCom plugin mirror not found. Checked: ${candidateSources.join(' | ')}`,
+      };
+    }
+
+    try {
+      mkdirSync(join(homedir(), '.openclaw', 'extensions'), { recursive: true });
+      rmSync(targetDir, { recursive: true, force: true });
+      cpSync(sourceDir, targetDir, { recursive: true, dereference: true });
+
+      if (!existsSync(targetManifest)) {
+        return { installed: false, warning: 'Failed to install WeCom plugin mirror (manifest missing).' };
+      }
+
+      logger.info(`Installed WeCom plugin from bundled mirror: ${sourceDir}`);
+      return { installed: true };
+    } catch (error) {
+      logger.warn('Failed to install WeCom plugin from bundled mirror:', error);
+      return {
+        installed: false,
+        warning: 'Failed to install bundled WeCom plugin mirror',
       };
     }
   }
@@ -1435,12 +1494,23 @@ function registerOpenClawHandlers(gatewayManager: GatewayManager): void {
           };
         }
         await saveChannelConfig(channelType, config);
-        if (gatewayManager.getStatus().state !== 'stopped') {
-          logger.info(`Scheduling Gateway reload after channel:saveConfig (${channelType})`);
-          gatewayManager.debouncedReload();
-        } else {
-          logger.info(`Gateway is stopped; skip immediate reload after channel:saveConfig (${channelType})`);
+        scheduleGatewayChannelRestart(`channel:saveConfig (${channelType})`);
+        return {
+          success: true,
+          pluginInstalled: installResult.installed,
+          warning: installResult.warning,
+        };
+      }
+      if (channelType === 'wecom') {
+        const installResult = await ensureWeComPluginInstalled();
+        if (!installResult.installed) {
+          return {
+            success: false,
+            error: installResult.warning || 'WeCom plugin install failed',
+          };
         }
+        await saveChannelConfig(channelType, config);
+        scheduleGatewayChannelRestart(`channel:saveConfig (${channelType})`);
         return {
           success: true,
           pluginInstalled: installResult.installed,
@@ -1448,12 +1518,7 @@ function registerOpenClawHandlers(gatewayManager: GatewayManager): void {
         };
       }
       await saveChannelConfig(channelType, config);
-      if (gatewayManager.getStatus().state !== 'stopped') {
-        logger.info(`Scheduling Gateway reload after channel:saveConfig (${channelType})`);
-        gatewayManager.debouncedReload();
-      } else {
-        logger.info(`Gateway is stopped; skip immediate reload after channel:saveConfig (${channelType})`);
-      }
+      scheduleGatewayChannelRestart(`channel:saveConfig (${channelType})`);
       return { success: true };
     } catch (error) {
       console.error('Failed to save channel config:', error);
@@ -1487,12 +1552,7 @@ function registerOpenClawHandlers(gatewayManager: GatewayManager): void {
   ipcMain.handle('channel:deleteConfig', async (_, channelType: string) => {
     try {
       await deleteChannelConfig(channelType);
-      if (gatewayManager.getStatus().state !== 'stopped') {
-        logger.info(`Scheduling Gateway reload after channel:deleteConfig (${channelType})`);
-        gatewayManager.debouncedReload();
-      } else {
-        logger.info(`Gateway is stopped; skip immediate reload after channel:deleteConfig (${channelType})`);
-      }
+      scheduleGatewayChannelRestart(`channel:deleteConfig (${channelType})`);
       return { success: true };
     } catch (error) {
       console.error('Failed to delete channel config:', error);
@@ -1515,12 +1575,7 @@ function registerOpenClawHandlers(gatewayManager: GatewayManager): void {
   ipcMain.handle('channel:setEnabled', async (_, channelType: string, enabled: boolean) => {
     try {
       await setChannelEnabled(channelType, enabled);
-      if (gatewayManager.getStatus().state !== 'stopped') {
-        logger.info(`Scheduling Gateway reload after channel:setEnabled (${channelType}, enabled=${enabled})`);
-        gatewayManager.debouncedReload();
-      } else {
-        logger.info(`Gateway is stopped; skip immediate reload after channel:setEnabled (${channelType})`);
-      }
+      scheduleGatewayChannelRestart(`channel:setEnabled (${channelType}, enabled=${enabled})`);
       return { success: true };
     } catch (error) {
       console.error('Failed to set channel enabled:', error);
