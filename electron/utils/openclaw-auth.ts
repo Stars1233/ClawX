@@ -1770,30 +1770,54 @@ export async function sanitizeOpenClawConfig(): Promise<void> {
       }
     }
 
-    // ── channels default-account migration ─────────────────────────
-    // Most OpenClaw channel plugins read the default account's credentials
-    // from the top level of `channels.<type>` (e.g. channels.feishu.appId),
-    // but ClawX historically stored them only under `channels.<type>.accounts.default`.
-    // Mirror the default account credentials at the top level so plugins can
-    // discover them.
+    // ── channels default-account migration and cleanup ─────────────
+    // Most OpenClaw channel plugins/built-ins read the default account's
+    // credentials from the top level of `channels.<type>`.  Mirror them
+    // there so the runtime can discover them.
+    //
+    // Strict-schema channels (e.g. dingtalk, additionalProperties:false)
+    // reject the `accounts` / `defaultAccount` keys entirely — strip them
+    // so the Gateway doesn't crash on startup.
     const channelsObj = config.channels as Record<string, Record<string, unknown>> | undefined;
+    const CHANNELS_EXCLUDING_TOP_LEVEL_MIRROR = new Set(['dingtalk']);
+
     if (channelsObj && typeof channelsObj === 'object') {
       for (const [channelType, section] of Object.entries(channelsObj)) {
         if (!section || typeof section !== 'object') continue;
-        const accounts = section.accounts as Record<string, Record<string, unknown>> | undefined;
-        const defaultAccount = accounts?.default;
-        if (!defaultAccount || typeof defaultAccount !== 'object') continue;
-        // Mirror each missing key from accounts.default to the top level
-        let mirrored = false;
-        for (const [key, value] of Object.entries(defaultAccount)) {
-          if (!(key in section)) {
-            section[key] = value;
-            mirrored = true;
+
+        if (CHANNELS_EXCLUDING_TOP_LEVEL_MIRROR.has(channelType)) {
+          // Strict-schema channel: strip `accounts` and `defaultAccount`.
+          // Credentials should live flat at the channel root.
+          if ('accounts' in section) {
+            delete section['accounts'];
+            modified = true;
+            console.log(`[sanitize] Removed incompatible 'accounts' from channels.${channelType}`);
           }
-        }
-        if (mirrored) {
-          modified = true;
-          console.log(`[sanitize] Mirrored ${channelType} default account credentials to top-level channels.${channelType}`);
+          if ('defaultAccount' in section) {
+            delete section['defaultAccount'];
+            modified = true;
+            console.log(`[sanitize] Removed incompatible 'defaultAccount' from channels.${channelType}`);
+          }
+        } else {
+          // Normal channel: mirror missing keys from default account to top level.
+          const accounts = section.accounts as Record<string, Record<string, unknown>> | undefined;
+          const defaultAccountId =
+            typeof section.defaultAccount === 'string' && section.defaultAccount.trim()
+                ? section.defaultAccount
+                : 'default';
+          const defaultAccountData = accounts?.[defaultAccountId] ?? accounts?.['default'];
+          if (!defaultAccountData || typeof defaultAccountData !== 'object') continue;
+          let mirrored = false;
+          for (const [key, value] of Object.entries(defaultAccountData)) {
+            if (!(key in section)) {
+              section[key] = value;
+              mirrored = true;
+            }
+          }
+          if (mirrored) {
+            modified = true;
+            console.log(`[sanitize] Mirrored ${channelType} default account credentials to top-level channels.${channelType}`);
+          }
         }
       }
     }
