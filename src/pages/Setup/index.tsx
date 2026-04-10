@@ -99,6 +99,7 @@ import {
   type ProviderTypeInfo,
   getProviderDocsUrl,
   getProviderIconUrl,
+  normalizeProviderApiKeyInput,
   resolveProviderApiKeyForSave,
   resolveProviderModelForSave,
   shouldInvertInDark,
@@ -1009,6 +1010,7 @@ function ProviderContent({
   const isOAuth = selectedProviderData?.isOAuth ?? false;
   const supportsApiKey = selectedProviderData?.supportsApiKey ?? false;
   const useOAuthFlow = isOAuth && (!supportsApiKey || authMode === 'oauth');
+  const normalizedApiKey = normalizeProviderApiKeyInput(apiKey);
 
   const handleValidateAndSave = async () => {
     if (!selectedProvider) return;
@@ -1034,11 +1036,19 @@ function ProviderContent({
     try {
       // Validate key if the provider requires one and a key was entered
       const isApiKeyRequired = requiresKey || (supportsApiKey && authMode === 'apikey');
-      if (isApiKeyRequired && apiKey) {
+      if (isApiKeyRequired && !normalizedApiKey) {
+        setKeyValid(false);
+        onConfiguredChange(false);
+        toast.error(t('provider.invalid'));
+        setValidating(false);
+        return;
+      }
+
+      if (isApiKeyRequired) {
         const result = await invokeIpc(
           'provider:validateKey',
           selectedAccountId || selectedProvider,
-          apiKey,
+          normalizedApiKey,
           {
             baseUrl: baseUrl.trim() || undefined,
             apiProtocol: (selectedProvider === 'custom' || selectedProvider === 'ollama')
@@ -1146,7 +1156,7 @@ function ProviderContent({
   const isApiKeyRequired = requiresKey || (supportsApiKey && authMode === 'apikey');
   const canSubmit =
     selectedProvider
-    && (isApiKeyRequired ? apiKey.length > 0 : true)
+    && (isApiKeyRequired ? normalizedApiKey.length > 0 : true)
     && (showModelIdField ? modelId.trim().length > 0 : true)
     && !useOAuthFlow;
 
