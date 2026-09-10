@@ -761,6 +761,20 @@ test.describe('ClawX ACP inline timeline', () => {
        await expect(toggle).toHaveText('Todo items: 1 / 2');
       expect(await getRecordedAcpLoadSessionKeys(app)).toEqual([MAIN_SESSION_KEY]);
 
+      await page.evaluate(() => {
+        const flashes: string[] = [];
+        const observer = new MutationObserver((records) => {
+          for (const record of records) {
+            for (const node of record.addedNodes) {
+              if (!(node instanceof Element)) continue;
+              const selector = '[data-testid="acp-chat-empty-state"]';
+              if (node.matches(selector) || node.querySelector(selector)) flashes.push('greeting');
+            }
+          }
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+        Object.assign(window, { stopSessionFlashObserver: () => { observer.disconnect(); return flashes; } });
+      });
       await page.getByTestId(`sidebar-session-${sessionBKey}`).click();
       await expect(toggle).toBeVisible({ timeout: 30_000 });
        await expect(toggle).toHaveText('Todo items: 0 / 1');
@@ -780,6 +794,9 @@ test.describe('ClawX ACP inline timeline', () => {
       await expect(returnedSteps.nth(0)).toHaveText('Load fresh session A replay');
       await expect(returnedSteps.nth(1)).toHaveText('Render structured session A response');
       expect(await getRecordedAcpLoadSessionKeys(app)).toEqual([MAIN_SESSION_KEY, sessionBKey, MAIN_SESSION_KEY]);
+      expect(await page.evaluate(() => (
+        window as unknown as { stopSessionFlashObserver: () => string[] }
+      ).stopSessionFlashObserver())).toEqual([]);
     } finally {
       await closeElectronApp(app);
     }
@@ -1555,6 +1572,14 @@ test.describe('ClawX ACP inline timeline', () => {
           locations: [],
         },
         {
+          sessionUpdate: 'tool_call',
+          toolCallId: 'history-tool-9',
+          title: 'computer: action: screenshot',
+          status: 'completed',
+          content: [{ type: 'content', content: { type: 'text', text: 'screenshot captured' } }],
+          locations: [],
+        },
+        {
           sessionUpdate: 'agent_message',
           messageId: 'history-assistant',
           content: [{ type: 'text', text: 'Hangzhou is cloudy today.' }],
@@ -1575,7 +1600,7 @@ test.describe('ClawX ACP inline timeline', () => {
       await expect(page.getByTestId('acp-tool-call-card')).toHaveCount(0);
 
       await expandAcpToolCallsGroup(page);
-      await expect(page.getByTestId('acp-tool-call-card')).toHaveCount(8);
+      await expect(page.getByTestId('acp-tool-call-card')).toHaveCount(9);
       await expect(page.getByText('Update plan: plan: [{"step":"Check weather"}]', { exact: true })).toBeVisible();
       await expect(page.getByText('Read web page: url: https://example.com/weather', { exact: true })).toBeVisible();
       await expect(page.getByText('Control browser: action: navigate', { exact: true })).toBeVisible();
@@ -1584,6 +1609,7 @@ test.describe('ClawX ACP inline timeline', () => {
       await expect(page.getByText('Write: path: weather.md', { exact: true })).toBeVisible();
       await expect(page.getByText('Spawn subagent: task: Check weather', { exact: true })).toBeVisible();
       await expect(page.getByText('Search memory: query: weather history', { exact: true })).toBeVisible();
+      await expect(page.getByText('Control computer: action: screenshot', { exact: true })).toBeVisible();
       await expect(page.getByTestId('acp-tool-icon-list-checks')).toBeVisible();
       await expect(page.getByTestId('acp-tool-icon-globe')).toBeVisible();
       await expect(page.getByTestId('acp-tool-icon-square-mouse-pointer')).toBeVisible();
@@ -1592,6 +1618,7 @@ test.describe('ClawX ACP inline timeline', () => {
       await expect(page.getByTestId('acp-tool-icon-save')).toBeVisible();
       await expect(page.getByTestId('acp-tool-icon-bot')).toBeVisible();
       await expect(page.getByTestId('acp-tool-icon-database')).toBeVisible();
+      await expect(page.getByTestId('acp-tool-icon-mouse-pointer-click')).toBeVisible();
       await expect(page.getByTestId('acp-assistant-turn')).toContainText('Hangzhou is cloudy today.');
     } finally {
       await closeElectronApp(app);

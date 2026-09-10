@@ -33,6 +33,7 @@ import { getMacTrafficLightPosition, syncMacTrafficLightPosition } from './traff
 import { getSetting } from '../utils/store';
 import { applyProxySettings } from './proxy';
 import { syncLaunchAtStartupSettingFromStore } from './launch-at-startup';
+import { syncNativeThemeFromStore } from './native-theme';
 import { WebBrowserGuestRegistry, installWebBrowserGuestPolicy } from './web-browser-policy';
 import { configureWebBrowserSession } from './web-browser-session';
 import {
@@ -48,6 +49,7 @@ import {
 } from './quit-lifecycle';
 import { createSignalQuitHandler } from './signal-quit';
 import { acquireProcessInstanceFileLock } from './process-instance-lock';
+import { getActiveAcpChatService } from '../services/acp-chat-service';
 import { ensureBuiltinSkillsInstalled, ensurePreinstalledSkillsInstalled, trimBundledOpenClawSkillsAndConfigs } from '../utils/skill-config';
 
 import { deviceOAuthManager } from '../utils/device-oauth';
@@ -327,6 +329,11 @@ async function initialize(): Promise<void> {
 
   // Set application menu
   await createMenu();
+
+  // Align native widget rendering (select popups, scrollbars, dialogs) with
+  // the persisted theme before the window is created so the window and its
+  // first popups never flash with a mismatched scheme.
+  await syncNativeThemeFromStore();
 
   // Create the main window
   const window = createMainWindow();
@@ -659,7 +666,13 @@ if (gotTheLock) {
 
     void extensionRegistry.teardownAll();
 
-    const stopPromise = gatewayManager.stop().catch((err) => {
+    // Terminate the ACP child (openclaw-acp) before stopping the Gateway: the
+    // child survives parent death and Gateway loss by reconnecting, so without
+    // this it would be orphaned after quit.
+    const acpStopPromise = (getActiveAcpChatService()?.stop() ?? Promise.resolve()).catch((err) => {
+      logger.warn('AcpChatService.stop() error during quit:', err);
+    });
+    const stopPromise = acpStopPromise.then(() => gatewayManager.stop()).catch((err) => {
       logger.warn('gatewayManager.stop() error during quit:', err);
     });
     const timeoutPromise = new Promise<'timeout'>((resolve) => {
