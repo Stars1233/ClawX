@@ -342,6 +342,48 @@ describe('plugin installer diagnostics', () => {
     });
   });
 
+  it('does not ship or expose an installer for the retired CUA adapter', async () => {
+    const actualFs = await vi.importActual<typeof import('node:fs')>('node:fs');
+    for (const file of ['package.json', 'openclaw.plugin.json', 'index.mjs', 'computer-tool.mjs', 'mcp-client.mjs']) {
+      expect(actualFs.existsSync(path.resolve('resources/openclaw-plugins/clawx-cua-computer', file))).toBe(false);
+    }
+    const installer = await import('@electron/utils/plugin-install');
+    expect(Object.keys(installer)).not.toContain('ensureClawXCuaPluginInstalled');
+  });
+
+  it('skips CUA install and trust repair at startup while retaining the OpenAI image mirror', async () => {
+    const extensions = '/home/test/.openclaw/extensions';
+    const retiredDir = `${extensions}/clawx-cua-computer`;
+    const imageDir = `${extensions}/clawx-openai-image`;
+    configState.authoritative = { plugins: {
+      allow: ['clawx-cua-computer'],
+      entries: { 'clawx-cua-computer': { enabled: false } },
+      installs: { 'clawx-cua-computer': { source: 'path', installPath: retiredDir } },
+    } };
+    const original = structuredClone(configState.authoritative);
+    mockExistsSync.mockImplementation((input: string) => {
+      const value = String(input);
+      return value.startsWith(retiredDir) || value.startsWith(imageDir);
+    });
+    mockReadFileSync.mockReturnValue(JSON.stringify({ version: '0.1.0' }));
+
+    const { ensureAllBundledPluginsInstalled, syncTrustedOfficialPluginInstallRecord } = await import('@electron/utils/plugin-install');
+    await ensureAllBundledPluginsInstalled();
+    await expect(syncTrustedOfficialPluginInstallRecord('clawx-cua-computer', retiredDir)).resolves.toBe(false);
+    expect(configState.authoritative).toEqual(original);
+    expect(mockCpSync).not.toHaveBeenCalled();
+    expect(mockUpsertPluginInstallRecordsIntoSqlite).toHaveBeenCalledWith({
+      'clawx-openai-image': expect.objectContaining({
+        source: 'path',
+        installPath: imageDir,
+      }),
+    });
+    expect(mockUpsertPluginInstallRecordsIntoSqlite).not.toHaveBeenCalledWith(expect.objectContaining({
+      'clawx-cua-computer': expect.anything(),
+    }));
+    expect(mockReadFileSync.mock.calls.some(([file]) => String(file).startsWith(retiredDir))).toBe(false);
+  });
+
   it('reports a failed OpenClaw peer link repair for an installed mirror', async () => {
     const targetDir = '/home/test/.openclaw/extensions/qqbot';
 

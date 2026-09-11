@@ -30,7 +30,7 @@ import {
 import { autoInstallCliIfNeeded, generateCompletionCache, installCompletionToProfile } from '../utils/openclaw-cli';
 import { isQuitting, setQuitting } from './app-state';
 import { getMacTrafficLightPosition, syncMacTrafficLightPosition } from './traffic-light-layout';
-import { getSetting } from '../utils/store';
+import { getSetting, registerComputerUsePreferenceHandler } from '../utils/store';
 import { applyProxySettings } from './proxy';
 import { syncLaunchAtStartupSettingFromStore } from './launch-at-startup';
 import { syncNativeThemeFromStore } from './native-theme';
@@ -51,6 +51,8 @@ import { createSignalQuitHandler } from './signal-quit';
 import { acquireProcessInstanceFileLock } from './process-instance-lock';
 import { getActiveAcpChatService } from '../services/acp-chat-service';
 import { ensureBuiltinSkillsInstalled, ensurePreinstalledSkillsInstalled, trimBundledOpenClawSkillsAndConfigs } from '../utils/skill-config';
+import { createDefaultCuaRuntimeManager, type CuaRuntimeManager } from '../utils/cua-runtime';
+import { createComputerUseApi, type ComputerUseApi } from '../services/computer-use-api';
 
 import { deviceOAuthManager } from '../utils/device-oauth';
 import { browserOAuthManager } from '../utils/browser-oauth';
@@ -120,6 +122,8 @@ const gotTheLock = gotElectronLock && gotFileLock;
 // Global references
 let mainWindow: BrowserWindow | null = null;
 let gatewayManager!: GatewayManager;
+let cuaRuntimeManager!: CuaRuntimeManager;
+let computerUseApi!: ComputerUseApi;
 let clawHubService!: ClawHubService;
 const hostApiRegistry = new HostApiRegistry();
 const webBrowserGuestRegistry = new WebBrowserGuestRegistry();
@@ -362,6 +366,11 @@ async function initialize(): Promise<void> {
   );
 
   // Register IPC handlers
+  hostApiRegistry.registerCoreServices({ computerUse: {
+    status: computerUseApi.status,
+    setEnabled: computerUseApi.setEnabled,
+    requestPermissions: computerUseApi.requestPermissions,
+  } });
   registerIpcHandlers(
     gatewayManager,
     clawHubService,
@@ -418,13 +427,11 @@ async function initialize(): Promise<void> {
     });
   }
 
-  // Pre-deploy built-in skills (feishu-doc, feishu-drive, feishu-perm, feishu-wiki)
-  // to ~/.openclaw/skills/ so they are immediately available without manual install.
-  if (!isE2EMode) {
-    void ensureBuiltinSkillsInstalled().catch((error) => {
-      logger.warn('Failed to install built-in skills:', error);
-    });
-  }
+  // Local-only first-party skills also install into the isolated E2E home so
+  // picker tests exercise real startup discovery without downloads or OS input.
+  void ensureBuiltinSkillsInstalled().catch((error) => {
+    logger.warn('Failed to install built-in skills:', error);
+  });
 
   // Keep community builds aligned with Clawx-biz by physically trimming
   // bundled OpenClaw consumer skills on startup (dev + packaged), keeping only
@@ -534,6 +541,14 @@ async function initialize(): Promise<void> {
     sendMainWindowEvent('channel:whatsapp-error', error);
   });
 
+  if (!isE2EMode) {
+    try {
+      await computerUseApi.initialize();
+    } catch (error) {
+      logger.warn('Local CUA runtime failed to start; continuing with Gateway startup:', error);
+    }
+  }
+
   // Start Gateway automatically (this seeds missing bootstrap files with full templates)
   const gatewayAutoStart = await getSetting('gatewayAutoStart');
   if (!isE2EMode && gatewayAutoStart) {
@@ -596,6 +611,11 @@ if (gotTheLock) {
   }
 
   gatewayManager = new GatewayManager();
+  cuaRuntimeManager = createDefaultCuaRuntimeManager();
+  computerUseApi = createComputerUseApi(cuaRuntimeManager);
+  registerComputerUsePreferenceHandler(async (enabled) => {
+    await computerUseApi.setEnabled({ enabled });
+  });
   registerOpenClawConfigCoordinator(gatewayManager);
   clawHubService = new ClawHubService();
 
@@ -635,6 +655,11 @@ if (gotTheLock) {
     // Register only after initialization so activation cannot race the initial
     // window or claim the single browser guest before host handlers are ready.
     app.on('activate', () => {
+      if (!isE2EMode) {
+        void computerUseApi.refresh().catch((error) => {
+          logger.warn('Failed to refresh local CUA permissions:', error);
+        });
+      }
       if (BrowserWindow.getAllWindows().length === 0) {
         loadMainWindow(createMainWindow());
       } else {
@@ -666,15 +691,31 @@ if (gotTheLock) {
 
     void extensionRegistry.teardownAll();
 
-    // Terminate the ACP child (openclaw-acp) before stopping the Gateway: the
-    // child survives parent death and Gateway loss by reconnecting, so without
-    // this it would be orphaned after quit.
-    const acpStopPromise = (getActiveAcpChatService()?.stop() ?? Promise.resolve()).catch((err) => {
-      logger.warn('AcpChatService.stop() error during quit:', err);
-    });
-    const stopPromise = acpStopPromise.then(() => gatewayManager.stop()).catch((err) => {
-      logger.warn('gatewayManager.stop() error during quit:', err);
-    });
+    const stopPromise = Promise.all([
+      (async () => {
+        // Stop ACP before Gateway so the child cannot reconnect and outlive the app.
+        // Computer Use cleanup runs independently of this ordered pair.
+        try {
+          await getActiveAcpChatService()?.stop();
+        } catch (err) {
+          logger.warn('AcpChatService.stop() error during quit:', err);
+        }
+        try {
+          await gatewayManager.stop();
+        } catch (err) {
+          logger.warn('gatewayManager.stop() error during quit:', err);
+        }
+      })(),
+      (async () => {
+        if (!isE2EMode) {
+          try {
+            await computerUseApi.stop();
+          } catch (err) {
+            logger.warn('cuaRuntimeManager.stop() error during quit:', err);
+          }
+        }
+      })(),
+    ]);
     const timeoutPromise = new Promise<'timeout'>((resolve) => {
       setTimeout(() => resolve('timeout'), 5000);
     });
