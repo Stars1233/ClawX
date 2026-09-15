@@ -790,19 +790,11 @@ describe('sanitizeOpenClawConfig', () => {
     expect(entries['openclaw-lark']).toBeUndefined();
   });
 
-  it('strips defaultAccount (but preserves accounts) from dingtalk during sanitize', async () => {
+  it('recovers an official DingTalk channel config when plugins metadata is absent', async () => {
     await writeOpenClawJson({
       channels: {
-        dingtalk: {
+        'dingtalk-connector': {
           enabled: true,
-          defaultAccount: 'default',
-          accounts: {
-            default: {
-              clientId: 'dt-client-id-nested',
-              clientSecret: 'dt-secret-nested',
-              enabled: true,
-            },
-          },
           clientId: 'dt-client-id',
           clientSecret: 'dt-secret',
         },
@@ -814,20 +806,84 @@ describe('sanitizeOpenClawConfig', () => {
 
     const result = await readOpenClawJson();
     const channels = result.channels as Record<string, Record<string, unknown>>;
+    const plugins = result.plugins as {
+      enabled?: boolean;
+      allow?: string[];
+      entries?: Record<string, { enabled?: boolean }>;
+    };
+    expect(channels['dingtalk-connector']).toBeUndefined();
+    expect(channels.dingtalk).toMatchObject({
+      enabled: true,
+      clientId: 'dt-client-id',
+      clientSecret: 'dt-secret',
+      requireMention: true,
+    });
+    expect(plugins).toMatchObject({
+      enabled: true,
+      allow: expect.arrayContaining(['dingtalk']),
+      entries: { dingtalk: { enabled: true } },
+    });
+  });
+
+  it('keeps defaultAccount on official DingTalk schema and strips soimy-only fields', async () => {
+    await writeOpenClawJson({
+      channels: {
+        dingtalk: {
+          enabled: true,
+          defaultAccount: 'default',
+          messageType: 'card',
+          cardStreamingMode: 'realtime',
+          accounts: {
+            default: {
+              clientId: 'dt-client-id-nested',
+              clientSecret: 'dt-secret-nested',
+              enabled: true,
+            },
+          },
+          clientId: 'dt-client-id',
+          clientSecret: 'dt-secret',
+        },
+        'dingtalk-connector': {
+          enabled: true,
+          clientId: 'other-client',
+        },
+      },
+      plugins: {
+        allow: ['dingtalk-connector'],
+        entries: {
+          'dingtalk-connector': { enabled: true },
+        },
+      },
+    });
+
+    const { sanitizeOpenClawConfig } = await import('@electron/utils/openclaw-auth');
+    await sanitizeOpenClawConfig();
+
+    const result = await readOpenClawJson();
+    const channels = result.channels as Record<string, Record<string, unknown>>;
+    const plugins = result.plugins as { allow?: string[]; entries?: Record<string, { enabled?: boolean }> };
     const dingtalk = channels.dingtalk;
-    // dingtalk's schema accepts `accounts` but NOT `defaultAccount`
     expect(dingtalk.enabled).toBe(true);
+    expect(dingtalk.defaultAccount).toBe('default');
+    expect(dingtalk.groupReplyMode).toBe('aicard');
+    expect(dingtalk.requireMention).toBe(false);
+    expect(dingtalk.messageType).toBeUndefined();
+    expect(dingtalk.cardStreamingMode).toBeUndefined();
+    expect(channels['dingtalk-connector']).toBeUndefined();
     expect(dingtalk.accounts).toEqual({
       default: {
         clientId: 'dt-client-id-nested',
         clientSecret: 'dt-secret-nested',
         enabled: true,
+        requireMention: false,
       },
     });
-    expect(dingtalk.defaultAccount).toBeUndefined();
-    // Top-level credentials preserved (were already there + mirrored)
     expect(dingtalk.clientId).toBe('dt-client-id');
     expect(dingtalk.clientSecret).toBe('dt-secret');
+    expect(plugins.allow).toContain('dingtalk');
+    expect(plugins.allow).not.toContain('dingtalk-connector');
+    expect(plugins.entries?.dingtalk).toEqual({ enabled: true });
+    expect(plugins.entries?.['dingtalk-connector']).toBeUndefined();
   });
 
   it('removes stale minimax-portal-auth plugin entries when merged minimax plugin is installed', async () => {

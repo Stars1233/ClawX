@@ -5,7 +5,7 @@
  *
  * Build a self-contained mirror of OpenClaw third-party plugins for packaging.
  * Current plugins:
- *   - @soimy/dingtalk -> build/openclaw-plugins/dingtalk
+ *   - @dingtalk-real-ai/dingtalk-connector -> build/openclaw-plugins/dingtalk
  *   - @wecom/wecom-openclaw-plugin -> build/openclaw-plugins/wecom
  *   - @openclaw/discord -> build/openclaw-plugins/discord
  *   - @openclaw/qqbot -> build/openclaw-plugins/qqbot
@@ -39,7 +39,7 @@ function normWin(p) {
 }
 
 const PLUGINS = [
-  { npmName: '@soimy/dingtalk', pluginId: 'dingtalk' },
+  { npmName: '@dingtalk-real-ai/dingtalk-connector', pluginId: 'dingtalk' },
   { npmName: '@wecom/wecom-openclaw-plugin', pluginId: 'wecom' },
   { npmName: '@larksuite/openclaw-lark', pluginId: 'feishu-openclaw-plugin' },
   { npmName: '@openclaw/discord', pluginId: 'discord' },

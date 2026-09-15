@@ -20,6 +20,7 @@ const {
   ensureWeChatPluginInstalledMock,
   getAllSettingsMock,
   getChannelFormValuesMock,
+  getDurableChannelConfigMock,
   getSettingMock,
   listLogFilesMock,
   logDir,
@@ -51,6 +52,10 @@ const {
   startWeChatLoginSessionMock,
   waitForWeChatLoginSessionMock,
   ensurePluginChannelRuntimeActivatedMock,
+  getDingTalkDwsOAuthStatusMock,
+  startDingTalkDwsOAuthMock,
+  cancelDingTalkDwsOAuthMock,
+  resetDingTalkDwsOAuthMock,
 } = vi.hoisted(() => ({
   applyNativeThemeSettingMock: vi.fn(),
   applyProxySettingsMock: vi.fn(),
@@ -67,6 +72,7 @@ const {
   ensureWeChatPluginInstalledMock: vi.fn(),
   getAllSettingsMock: vi.fn(),
   getChannelFormValuesMock: vi.fn(),
+  getDurableChannelConfigMock: vi.fn(),
   getSettingMock: vi.fn(),
   listLogFilesMock: vi.fn(),
   logDir: '/tmp/clawx-host-services-test-logs',
@@ -130,6 +136,10 @@ const {
   startWeChatLoginSessionMock: vi.fn(),
   waitForWeChatLoginSessionMock: vi.fn(),
   ensurePluginChannelRuntimeActivatedMock: vi.fn(),
+  getDingTalkDwsOAuthStatusMock: vi.fn(() => ({ status: 'needs_auth' })),
+  startDingTalkDwsOAuthMock: vi.fn(),
+  cancelDingTalkDwsOAuthMock: vi.fn(() => ({ status: 'needs_auth' })),
+  resetDingTalkDwsOAuthMock: vi.fn(() => ({ status: 'needs_auth' })),
 }));
 
 vi.mock('@electron/utils/store', () => ({
@@ -176,6 +186,7 @@ vi.mock('@electron/utils/channel-config', () => ({
   deleteChannelAccountConfig: (...args: unknown[]) => deleteChannelAccountConfigMock(...args),
   deleteChannelConfig: (...args: unknown[]) => deleteChannelConfigMock(...args),
   getChannelFormValues: (...args: unknown[]) => getChannelFormValuesMock(...args),
+  getDurableChannelConfig: (...args: unknown[]) => getDurableChannelConfigMock(...args),
   listConfiguredChannelAccountsFromConfig: (...args: unknown[]) => listConfiguredChannelAccountsFromConfigMock(...args),
   listConfiguredChannels: (...args: unknown[]) => listConfiguredChannelsMock(...args),
   listConfiguredChannelsFromConfig: (...args: unknown[]) => listConfiguredChannelsFromConfigMock(...args),
@@ -203,6 +214,14 @@ vi.mock('@electron/utils/agent-config', () => ({
   resolveAccountIdForAgent: vi.fn((agentId: string) => agentId === 'main' ? 'default' : agentId),
   updateAgentModel: vi.fn(),
   updateAgentName: (...args: unknown[]) => updateAgentNameMock(...args),
+}));
+
+vi.mock('@electron/utils/dingtalk-dws', () => ({
+  getDingTalkDwsStatusNote: vi.fn(),
+  getDingTalkDwsOAuthStatus: (...args: unknown[]) => getDingTalkDwsOAuthStatusMock(...args),
+  startDingTalkDwsOAuth: (...args: unknown[]) => startDingTalkDwsOAuthMock(...args),
+  cancelDingTalkDwsOAuth: (...args: unknown[]) => cancelDingTalkDwsOAuthMock(...args),
+  resetDingTalkDwsOAuth: (...args: unknown[]) => resetDingTalkDwsOAuthMock(...args),
 }));
 
 vi.mock('@electron/utils/plugin-install', () => ({
@@ -363,6 +382,17 @@ describe('host services', () => {
     ensureWeChatPluginInstalledMock.mockResolvedValue({ installed: true });
     ensurePluginChannelRuntimeActivatedMock.mockResolvedValue('already-live');
     ensureClawXContextMock.mockResolvedValue(undefined);
+    getDingTalkDwsOAuthStatusMock.mockReturnValue({ status: 'needs_auth' });
+    getDurableChannelConfigMock.mockResolvedValue(undefined);
+    startDingTalkDwsOAuthMock.mockResolvedValue({
+      status: 'pending',
+      verificationUri: 'https://login.dingtalk.com/oauth2/device/verify.htm',
+      verificationUriComplete: 'https://login.dingtalk.com/oauth2/device/verify.htm?user_code=TEST-CODE',
+      userCode: 'TEST-CODE',
+      expiresAt: Date.now() + 900_000,
+    });
+    cancelDingTalkDwsOAuthMock.mockReturnValue({ status: 'needs_auth' });
+    resetDingTalkDwsOAuthMock.mockReturnValue({ status: 'needs_auth' });
     rmSync(logDir, { recursive: true, force: true });
     rmSync(testOpenClawConfigDir, { recursive: true, force: true });
     mkdirSync(logDir, { recursive: true });
@@ -864,6 +894,109 @@ describe('host services', () => {
         },
       ],
     });
+  });
+
+  it('merges the official DingTalk __default__ runtime account into ClawX default', async () => {
+    readOpenClawConfigMock.mockResolvedValue({
+      channels: {
+        dingtalk: {
+          accounts: {
+            default: { clientId: 'ding-client' },
+          },
+        },
+      },
+    });
+    listConfiguredChannelsFromConfigMock.mockResolvedValue(['dingtalk']);
+    listConfiguredChannelAccountsFromConfigMock.mockReturnValue({
+      dingtalk: { defaultAccountId: 'default', accountIds: ['default'] },
+    });
+    const gatewayManager = {
+      rpc: vi.fn().mockResolvedValue({
+        channelDefaultAccountId: { dingtalk: '__default__' },
+        channelAccounts: {
+          dingtalk: [{
+            accountId: '__default__',
+            configured: true,
+            running: true,
+            connected: true,
+            lastError: 'stale startup error',
+            probe: { ok: true },
+          }],
+        },
+      }),
+      getStatus: vi.fn(() => ({ state: 'running', port: 18789 })),
+      getDiagnostics: vi.fn(() => ({ consecutiveHeartbeatMisses: 0, consecutiveRpcFailures: 0 })),
+    };
+    const { createChannelsApi } = await import('@electron/services/channels-api');
+    const result = await createChannelsApi({ gatewayManager: gatewayManager as never })
+      .accounts({ mode: 'runtime', probe: true });
+    const dingtalk = result.channels.find((channel) => channel.channelType === 'dingtalk');
+
+    expect(dingtalk).toMatchObject({
+      defaultAccountId: 'default',
+      status: 'connected',
+      accounts: [{
+        accountId: 'default',
+        configured: true,
+        connected: true,
+        status: 'connected',
+      }],
+    });
+    expect(dingtalk?.accounts).toHaveLength(1);
+    expect(dingtalk?.accounts[0]?.lastError).toBeUndefined();
+  });
+
+  it('keeps a connected DingTalk Stream healthy when its optional contact probe returns 403', async () => {
+    readOpenClawConfigMock.mockResolvedValue({
+      channels: {
+        dingtalk: {
+          accounts: {
+            default: { clientId: 'ding-client' },
+          },
+        },
+      },
+    });
+    listConfiguredChannelsFromConfigMock.mockResolvedValue(['dingtalk']);
+    listConfiguredChannelAccountsFromConfigMock.mockReturnValue({
+      dingtalk: { defaultAccountId: 'default', accountIds: ['default'] },
+    });
+    const connectedWithForbiddenProbe = {
+      channelDefaultAccountId: { dingtalk: '__default__' },
+      channelAccounts: {
+        dingtalk: [{
+          accountId: '__default__',
+          configured: true,
+          running: true,
+          connected: true,
+          lastError: 'Request failed with status code 403',
+          probe: { ok: false, error: 'Request failed with status code 403' },
+        }],
+      },
+    };
+    const gatewayManager = {
+      rpc: vi.fn().mockResolvedValue(connectedWithForbiddenProbe),
+      getStatus: vi.fn(() => ({ state: 'running', port: 18789 })),
+      getDiagnostics: vi.fn(() => ({ consecutiveHeartbeatMisses: 0, consecutiveRpcFailures: 0 })),
+    };
+    const { createChannelsApi } = await import('@electron/services/channels-api');
+    const channelsApi = createChannelsApi({ gatewayManager: gatewayManager as never });
+
+    const probed = await channelsApi.accounts({ mode: 'runtime', probe: true });
+    const cached = await channelsApi.accounts({ mode: 'runtime' });
+
+    for (const result of [probed, cached]) {
+      const dingtalk = result.channels.find((channel) => channel.channelType === 'dingtalk');
+      expect(dingtalk).toMatchObject({
+        defaultAccountId: 'default',
+        status: 'connected',
+        accounts: [{
+          accountId: 'default',
+          connected: true,
+          status: 'connected',
+        }],
+      });
+      expect(dingtalk?.accounts[0]?.lastError).toBeUndefined();
+    }
   });
 
   describe('remembered channel probe failures', () => {
@@ -1758,6 +1891,50 @@ describe('host services', () => {
     });
     expect(send).not.toHaveBeenCalledWith('channel:wechat-error', expect.anything());
     expect(gatewayManager.restart).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts DingTalk workspace OAuth with stored credentials without exposing the secret', async () => {
+    getDurableChannelConfigMock.mockResolvedValue({
+      clientId: 'ding-client-id',
+      clientSecret: 'ding-client-secret',
+    });
+    const gatewayManager = {
+      getStatus: vi.fn(() => ({ state: 'stopped', gatewayReady: false })),
+      rpc: vi.fn(),
+    };
+    const { createChannelsApi } = await import('@electron/services/channels-api');
+    const channelsApi = createChannelsApi({ gatewayManager: gatewayManager as never });
+
+    const result = await channelsApi.dingtalkWorkspaceAuthStart({
+      channelType: 'dingtalk',
+      accountId: 'default',
+    });
+
+    expect(startDingTalkDwsOAuthMock).toHaveBeenCalledWith({
+      clientId: 'ding-client-id',
+      clientSecret: 'ding-client-secret',
+    });
+    expect(result).toMatchObject({
+      success: true,
+      status: 'pending',
+      userCode: 'TEST-CODE',
+    });
+    expect(JSON.stringify(result)).not.toContain('ding-client-secret');
+  });
+
+  it('resets DingTalk workspace OAuth through the typed Channels API', async () => {
+    const gatewayManager = {
+      getStatus: vi.fn(() => ({ state: 'stopped', gatewayReady: false })),
+      rpc: vi.fn(),
+    };
+    const { createChannelsApi } = await import('@electron/services/channels-api');
+    const channelsApi = createChannelsApi({ gatewayManager: gatewayManager as never });
+
+    await expect(channelsApi.dingtalkWorkspaceAuthReset({
+      channelType: 'dingtalk',
+      accountId: 'default',
+    })).resolves.toEqual({ success: true, status: 'needs_auth' });
+    expect(resetDingTalkDwsOAuthMock).toHaveBeenCalledTimes(1);
   });
 
   it('returns diagnostics snapshot with channel view and log tails', async () => {

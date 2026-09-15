@@ -60,6 +60,12 @@ import {
   writeAuthProfilesToSqlite,
   type PersistedAuthProfilesStore,
 } from './openclaw-auth-sqlite';
+import {
+  DINGTALK_OFFICIAL_PLUGIN_ID,
+  DINGTALK_PLUGIN_ID,
+  migrateDingTalkChannelSection,
+  migrateDingTalkPluginRegistrations,
+} from './dingtalk-plugin-compat';
 
 const AUTH_STORE_VERSION = 1;
 const AUTH_PROFILE_FILENAME = 'auth-profiles.json';
@@ -3116,12 +3122,21 @@ export async function sanitizeOpenClawConfig(): Promise<void> {
     }
 
     // ── plugins section ──────────────────────────────────────────────
+    // Channel-key migration must run even when plugins metadata is absent.
+    // Otherwise an imported official-connector config remains under the
+    // unsupported channels.dingtalk-connector key and is omitted from plugin
+    // recovery and the Channels UI.
+    if (migrateDingTalkChannelSection(config)) {
+      modified = true;
+      console.log('[sanitize] Normalized DingTalk channel config onto channels.dingtalk');
+    }
+
     // OpenClaw 2026.7.1 moved these formerly bundled channels to external
     // plugins. Recover old channel-only configs before plugin sanitization.
     let plugins = config.plugins;
     if (!plugins && isPlainRecord(config.channels)) {
       const channels = config.channels as Record<string, unknown>;
-      const externalChannelIds = ['discord', 'whatsapp', 'qqbot'].filter((channelId) => {
+      const externalChannelIds = ['discord', 'whatsapp', 'qqbot', DINGTALK_PLUGIN_ID].filter((channelId) => {
         const section = channels[channelId];
         return isPlainRecord(section) && section.enabled !== false && Object.keys(section).length > 0;
       });
@@ -3638,6 +3653,46 @@ export async function sanitizeOpenClawConfig(): Promise<void> {
         modified = true;
       }
 
+      // ── official DingTalk connector → dingtalk identity ─────────
+      if (migrateDingTalkPluginRegistrations(config)) {
+        modified = true;
+        console.log('[sanitize] Normalized DingTalk plugin registration onto dingtalk');
+      }
+      const dingtalkConfigured = Boolean(
+        (config.channels as Record<string, unknown> | undefined)?.[DINGTALK_PLUGIN_ID],
+      );
+      if (dingtalkConfigured) {
+        if (Array.isArray(pluginsObj.allow) && !(pluginsObj.allow as string[]).includes(DINGTALK_PLUGIN_ID)) {
+          (pluginsObj.allow as string[]).push(DINGTALK_PLUGIN_ID);
+          modified = true;
+        }
+        if (!pEntries[DINGTALK_PLUGIN_ID]) {
+          pEntries[DINGTALK_PLUGIN_ID] = { enabled: true };
+          modified = true;
+        } else if (pEntries[DINGTALK_PLUGIN_ID].enabled !== true) {
+          pEntries[DINGTALK_PLUGIN_ID].enabled = true;
+          modified = true;
+        }
+      } else {
+        if (Array.isArray(pluginsObj.allow)) {
+          const nextAllow = (pluginsObj.allow as string[]).filter((id) => (
+            id !== DINGTALK_PLUGIN_ID && id !== DINGTALK_OFFICIAL_PLUGIN_ID
+          ));
+          if (nextAllow.length !== (pluginsObj.allow as string[]).length) {
+            pluginsObj.allow = nextAllow;
+            modified = true;
+          }
+        }
+        if (pEntries[DINGTALK_PLUGIN_ID]) {
+          delete pEntries[DINGTALK_PLUGIN_ID];
+          modified = true;
+        }
+        if (pEntries[DINGTALK_OFFICIAL_PLUGIN_ID]) {
+          delete pEntries[DINGTALK_OFFICIAL_PLUGIN_ID];
+          modified = true;
+        }
+      }
+
       // ── external channel plugin registration cleanup ────────────
       // Channel account configuration belongs under channels.<id>. OpenClaw's
       // PluginEntryConfig rejects ClawX's legacy accounts/defaultAccount mirror.
@@ -3916,10 +3971,10 @@ export async function sanitizeOpenClawConfig(): Promise<void> {
     // there so the runtime can discover them.
     //
     // Channels whose top-level schema (additionalProperties:false) does NOT
-    // include `defaultAccount` but DOES include `accounts`.  Strip only
-    // `defaultAccount` to allow multi-account support.
+    // include `defaultAccount` but DOES include `accounts`. Official DingTalk
+    // 0.8.25 accepts `defaultAccount`, so nothing is stripped here.
     const channelsObj = config.channels as Record<string, Record<string, unknown>> | undefined;
-    const CHANNELS_OMIT_DEFAULT_ACCOUNT_KEY = new Set(['dingtalk']);
+    const CHANNELS_OMIT_DEFAULT_ACCOUNT_KEY = new Set<string>();
 
     if (channelsObj && typeof channelsObj === 'object') {
       for (const [channelType, section] of Object.entries(channelsObj)) {

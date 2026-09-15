@@ -158,6 +158,62 @@ describe('WeCom plugin configuration', () => {
     await rm(testUserData, { recursive: true, force: true });
   });
 
+  it('sets plugins.entries.dingtalk.enabled and sanitizes soimy card fields', async () => {
+    const { saveChannelConfig } = await import('@electron/utils/channel-config');
+
+    await writeOpenClawJson({
+      channels: {
+        'dingtalk-connector': {
+          enabled: true,
+          clientId: 'should-not-win',
+        },
+      },
+      plugins: {
+        allow: ['dingtalk-connector'],
+        entries: {
+          'dingtalk-connector': { enabled: true },
+        },
+      },
+    });
+
+    await saveChannelConfig('dingtalk', {
+      clientId: 'dt-client-id',
+      clientSecret: 'dt-secret',
+      messageType: 'card',
+      cardStreamingMode: 'realtime',
+    }, 'default');
+
+    const config = await readOpenClawJson();
+    const channels = config.channels as Record<string, Record<string, unknown>>;
+    const plugins = config.plugins as { allow: string[]; entries: Record<string, { enabled?: boolean }> };
+    const dingtalk = channels.dingtalk;
+
+    expect(dingtalk.clientId).toBe('dt-client-id');
+    expect(dingtalk.clientSecret).toBe('dt-secret');
+    expect(dingtalk.defaultAccount).toBe('default');
+    expect(dingtalk.groupReplyMode).toBe('aicard');
+    expect(dingtalk.messageType).toBeUndefined();
+    expect(channels['dingtalk-connector']).toBeUndefined();
+    expect(plugins.allow).toContain('dingtalk');
+    expect(plugins.allow).not.toContain('dingtalk-connector');
+    expect(plugins.entries.dingtalk.enabled).toBe(true);
+    expect(plugins.entries['dingtalk-connector']).toBeUndefined();
+  });
+
+  it('reads unredacted DingTalk credentials from the durable account config for workspace OAuth', async () => {
+    const { getDurableChannelConfig, saveChannelConfig } = await import('@electron/utils/channel-config');
+
+    await saveChannelConfig('dingtalk', {
+      clientId: 'ding-client-id',
+      clientSecret: 'ding-client-secret',
+    }, 'ding-main');
+
+    await expect(getDurableChannelConfig('dingtalk', 'ding-main')).resolves.toMatchObject({
+      clientId: 'ding-client-id',
+      clientSecret: 'ding-client-secret',
+    });
+  });
+
   it('sets plugins.entries.wecom.enabled when saving wecom config', async () => {
     const { saveChannelConfig } = await import('@electron/utils/channel-config');
 

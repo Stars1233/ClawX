@@ -32,11 +32,17 @@
         "bindingUpdated": "アカウントの紐付けを保存しました",
         "defaultUpdated": "デフォルトアカウントを更新しました",
         "accountDeleted": "アカウントを削除しました",
-        "channelDeleted": "チャンネルを削除しました"
+        "channelDeleted": "チャンネルを削除しました",
+        "dingtalkWorkspaceAuthReset": "DingTalk ワークスペース認可を解除しました",
+        "dingtalkWorkspaceAuthResetFailed": "DingTalk ワークスペース認可を解除できませんでした"
     },
     "account": {
         "add": "アカウントを追加",
         "edit": "編集",
+        "authorizeWorkspace": "ワークスペースを認可",
+        "resetWorkspaceAuth": "ワークスペース認可を解除",
+        "resetWorkspaceAuthConfirm": "この端末に保存された DingTalk ワークスペース認可を解除しますか？設定済みの DingTalk アカウントはこの認可を共有しています。解除後もチャットは利用できますが、カレンダー、ドキュメント、タスクなどは再認可が必要です。",
+        "resetWorkspaceAuthConfirmAction": "認可を解除",
         "delete": "アカウントを削除",
         "deleteChannel": "チャンネルを削除",
         "deleteConfirm": "このアカウントを削除してもよろしいですか？",
@@ -99,6 +105,29 @@
         "updateAndReconnect": "更新して再接続",
         "saveAndConnect": "保存して接続",
         "envVar": "環境変数: {{var}}",
+        "dingtalkWorkspaceAuthTitle": "DingTalk ワークスペースを認可",
+        "dingtalkWorkspaceAuthDescription": "ボットは接続済みです。カレンダー、ドキュメント、タスクなどの DingTalk ワークスペース機能へのアクセスは任意で認可できます。",
+        "dingtalkWorkspaceAuthStarting": "安全な DingTalk 認可を準備しています…",
+        "dingtalkWorkspaceAuthCodeHint": "DingTalk の認可ページで次のコードを確認してください：",
+        "dingtalkWorkspaceAuthOpen": "DingTalk 認可を開く",
+        "dingtalkWorkspaceAuthWaiting": "認可を待っています。この手順をスキップしてチャットのみを利用することもできます。",
+        "dingtalkWorkspaceAuthSkip": "後で",
+        "dingtalkWorkspaceAuthStart": "今すぐ認可",
+        "dingtalkWorkspaceAuthRetry": "再試行",
+        "dingtalkWorkspaceAuthSuccess": "DingTalk ワークスペースの認可が完了しました",
+        "dingtalkWorkspaceAuthErrors": {
+            "unavailable": "DingTalk ワークスペースツールを利用できません。チャットのみで続行できます。",
+            "authorization_expired": "認可コードの有効期限が切れました。新しいコードを生成して再試行してください。",
+            "authorization_start_timeout": "DingTalk から認可コードを取得できませんでした。再試行してください。",
+            "authorization_not_completed": "DingTalk の認可が完了しませんでした。再試行してください。",
+            "authorization_user_not_allowed": "この DingTalk ユーザーはアプリの利用範囲外です。開発者コンソールで利用範囲を更新してください。",
+            "authorization_denied": "DingTalk の認可がキャンセルまたは拒否されました。再試行して認可してください。",
+            "authorization_invalid_client": "DingTalk アプリの認証情報を OAuth に使用できません。Client ID、Client Secret、アプリ設定を確認してください。",
+            "authorization_org_cli_disabled": "この組織では CLI データアクセスが有効になっていません。組織の主管理者が DingTalk 開発者コンソールで、メンバーによる CLI からの個人データアクセスを有効にしてください。",
+            "authorization_permission_denied": "DingTalk アプリに必要な権限または管理者の承認がありません。",
+            "authorization_network_error": "DingTalk 認可サービスに接続できません。ネットワークまたはプロキシを確認してください。",
+            "authorization_failed": "DingTalk ワークスペースの認可に失敗しました。再試行するか、チャットのみを利用してください。"
+        },
         "validationErrors": {
             "feishuAppIdRequired": "App ID を入力してください。",
             "feishuAppSecretRequired": "App Secret を入力してください。",
@@ -122,7 +151,9 @@
             "rpc_timeout": "最近のゲートウェイ RPC がタイムアウトしました。",
             "gateway_not_running": "ゲートウェイは起動していません。",
             "gateway_error": "ゲートウェイはエラー状態です。",
-            "runtime_error": "チャンネルランタイムがエラーを返しました。"
+            "runtime_error": "チャンネルランタイムがエラーを返しました。",
+            "dingtalk_dws_missing": "チャットは利用できます。カレンダーやドキュメントなどのオフィススキルには、同梱の DingTalk workspace CLI（dws）が必要です。",
+            "dingtalk_dws_auth_required": "チャットは利用できます。カレンダーやドキュメントなどのオフィススキルには、DingTalk workspace の認可が必要です。"
         },
         "recovery": {
             "verifying": "ClawX がゲートウェイの応答を確認しています。",
@@ -212,7 +243,7 @@
             ]
         },
         "dingtalk": {
-            "description": "OpenClaw のチャンネルプラグイン経由で DingTalk に接続します（Stream モード）",
+            "description": "公式 OpenClaw コネクタで DingTalk に接続します（Stream チャット）。カレンダーやドキュメントなどのオフィススキルは同梱の dws CLI を使います。",
             "docsUrl": "https://icnnp7d0dymg.feishu.cn/wiki/Y5eNwiSiZidkLskrwtJc1rUln0b#doxcnDgA78n43DbkiQjI1OqUA7b",
             "fields": {
                 "clientId": {
@@ -225,9 +256,10 @@
                 }
             },
             "instructions": [
-                "まず OpenClaw に dingtalk プラグインをインストールして有効化します",
+                "ClawX は公式 DingTalk コネクタをインストールし、既存の dingtalk チャネル ID を維持します",
                 "DingTalk 開発者コンソールで社内アプリを作成し Stream モードを有効にします",
-                "Client ID (AppKey) と Client Secret (AppSecret) を入力します"
+                "Client ID (AppKey) と Client Secret (AppSecret) を入力します",
+                "チャットはすぐ使えます。カレンダー、ドキュメント、ToDo には DingTalk workspace 認可（dws）が必要です"
             ]
         },
         "feishu": {

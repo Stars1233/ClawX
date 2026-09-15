@@ -33,7 +33,8 @@ import { buildProxyEnv, resolveProxySettings } from '../utils/proxy';
 import { syncProxyConfigToOpenClaw } from '../utils/openclaw-proxy';
 import { logger } from '../utils/logger';
 import { prependPathEntry } from '../utils/env-path';
-import { copyPluginFromNodeModules, fixupPluginManifest, cpSyncSafe, buildCandidateSources, repairTrustedOfficialPluginInstallRecords, removeTrustedOfficialPluginInstallRecord, resolvePluginNpmPackagePath } from '../utils/plugin-install';
+import { resolveDingTalkDwsBinDir } from '../utils/dingtalk-dws';
+import { copyPluginFromNodeModules, fixupPluginManifest, cpSyncSafe, buildCandidateSources, repairTrustedOfficialPluginInstallRecords, removeTrustedOfficialPluginInstallRecord, removeLegacyOfficialDingTalkExtension, resolvePluginNpmPackagePath } from '../utils/plugin-install';
 import { safeRmSync } from '../utils/safe-fs';
 import { CLAWX_OPENAI_IMAGE_PROVIDER_KEY } from '../utils/openclaw-image-relay-constants';
 import {
@@ -74,7 +75,7 @@ export interface GatewayPrelaunchSyncSummary {
 // ── Auto-upgrade bundled plugins on startup ──────────────────────
 
 const CHANNEL_PLUGIN_MAP: Record<string, { dirName: string; npmName: string }> = {
-  dingtalk: { dirName: 'dingtalk', npmName: '@soimy/dingtalk' },
+  dingtalk: { dirName: 'dingtalk', npmName: '@dingtalk-real-ai/dingtalk-connector' },
   wecom: { dirName: 'wecom', npmName: '@wecom/wecom-openclaw-plugin' },
   feishu: { dirName: 'feishu-openclaw-plugin', npmName: '@larksuite/openclaw-lark' },
   discord: { dirName: 'discord', npmName: '@openclaw/discord' },
@@ -132,13 +133,16 @@ function cleanupStaleBuiltInExtensions(): void {
   }
 }
 
-function readPluginVersion(pkgJsonPath: string): string | null {
+function readPluginPackageMetadata(pkgJsonPath: string): { name: string | null; version: string | null } {
   try {
     const raw = readFileSync(fsPath(pkgJsonPath), 'utf-8');
-    const parsed = JSON.parse(raw) as { version?: string };
-    return parsed.version ?? null;
+    const parsed = JSON.parse(raw) as { name?: string; version?: string };
+    return {
+      name: typeof parsed.name === 'string' ? parsed.name : null,
+      version: typeof parsed.version === 'string' ? parsed.version : null,
+    };
   } catch {
-    return null;
+    return { name: null, version: null };
   }
 }
 
@@ -183,16 +187,25 @@ function ensureConfiguredPluginsUpgraded(configuredChannels: string[]): boolean 
     const targetDir = join(homedir(), '.openclaw', 'extensions', dirName);
     const targetManifest = join(targetDir, 'openclaw.plugin.json');
     const isInstalled = existsSync(fsPath(targetManifest));
-    const installedVersion = isInstalled ? readPluginVersion(join(targetDir, 'package.json')) : null;
+    const installedPackage = isInstalled
+      ? readPluginPackageMetadata(join(targetDir, 'package.json'))
+      : { name: null, version: null };
+    const installedVersion = installedPackage.version;
 
     // Try bundled sources first (packaged mode or if bundle-plugins was run)
     const bundledSources = buildCandidateSources(dirName);
     const bundledDir = bundledSources.find((dir) => existsSync(fsPath(join(dir, 'openclaw.plugin.json'))));
 
     if (bundledDir) {
-      const sourceVersion = readPluginVersion(join(bundledDir, 'package.json'));
-      // Install or upgrade if version differs or plugin not installed
-      if (!isInstalled || (sourceVersion && installedVersion && sourceVersion !== installedVersion)) {
+      const sourcePackage = readPluginPackageMetadata(join(bundledDir, 'package.json'));
+      const sourceVersion = sourcePackage.version;
+      const packageOwnerChanged = Boolean(
+        sourcePackage.name
+        && sourcePackage.name !== installedPackage.name,
+      );
+      // A package ownership change is an upgrade even if the two publishers
+      // happen to use the same version string.
+      if (!isInstalled || packageOwnerChanged || (sourceVersion && installedVersion && sourceVersion !== installedVersion)) {
         logger.info(`[plugin] ${isInstalled ? 'Auto-upgrading' : 'Installing'} ${channelType} plugin${isInstalled ? `: ${installedVersion} → ${sourceVersion}` : `: ${sourceVersion}`} (bundled)`);
         try {
           mkdirSync(fsPath(join(homedir(), '.openclaw', 'extensions')), { recursive: true });
@@ -215,10 +228,15 @@ function ensureConfiguredPluginsUpgraded(configuredChannels: string[]): boolean 
     if (!app.isPackaged) {
       const npmPkgPath = resolvePluginNpmPackagePath(npmName);
       if (npmPkgPath && existsSync(fsPath(join(npmPkgPath, 'openclaw.plugin.json')))) {
-        const sourceVersion = readPluginVersion(join(npmPkgPath, 'package.json'));
+        const sourcePackage = readPluginPackageMetadata(join(npmPkgPath, 'package.json'));
+        const sourceVersion = sourcePackage.version;
         if (!sourceVersion) continue;
-        // Skip only if installed AND same version — but still patch manifest ID.
-        if (isInstalled && installedVersion && sourceVersion === installedVersion) {
+        const packageOwnerChanged = Boolean(
+          sourcePackage.name
+          && sourcePackage.name !== installedPackage.name,
+        );
+        // Skip only if both package owner and version already match.
+        if (isInstalled && !packageOwnerChanged && installedVersion && sourceVersion === installedVersion) {
           fixupPluginManifest(targetDir);
           continue;
         }
@@ -536,6 +554,16 @@ export async function syncGatewayConfigBeforeLaunch(
       },
     ));
     maintenance['plugin-maintenance'] = result;
+
+    // This legacy directory can coexist with ClawX's remapped `dingtalk`
+    // mirror and create a second Stream client. Remove it on upgrade before
+    // Gateway starts, but only after the canonical official mirror exists.
+    if (configuredChannels.includes('dingtalk')) {
+      removeLegacyOfficialDingTalkExtension({ requireCanonicalMirror: true });
+    } else {
+      removeLegacyOfficialDingTalkExtension();
+    }
+
     // Always refresh trusted install metadata through ClawX — this must not
     // be skipped when plugin-maintenance is cache-hit, otherwise official
     // external plugins like WhatsApp fail openKeyedStore at runtime.
@@ -706,9 +734,13 @@ export async function prepareGatewayLaunchContext(port: number): Promise<Gateway
     platform,
     app.getPath('userData'),
   );
-  const baseEnvPatched = binPathExists
+  const baseEnvWithBin = binPathExists
     ? prependPathEntry(baseEnvRecord, binPath).env
     : baseEnvRecord;
+  const dwsBinDir = resolveDingTalkDwsBinDir();
+  const baseEnvPatched = dwsBinDir
+    ? prependPathEntry(baseEnvWithBin, dwsBinDir).env
+    : baseEnvWithBin;
   const forkEnv: Record<string, string | undefined> = {
     ...stripSystemdSupervisorEnv(baseEnvPatched),
     ...providerEnv,
@@ -725,6 +757,10 @@ export async function prepareGatewayLaunchContext(port: number): Promise<Gateway
     // Electron app at <cwd>/const safe = new Set(...)". Turning the snapshot off
     // avoids that broken spawn; exec tools fall back to the Gateway launch env.
     OPENCLAW_EXEC_SHELL_SNAPSHOT: '0',
+    // Official DingTalk skills (`dws-cli`) expect the workspace CLI on PATH
+    // and the OpenClaw channel marker. Client credentials are injected by the
+    // remapped connector from the saved bot config.
+    DWS_CHANNEL: 'openclaw',
   };
 
   // Ensure extension-specific packages (e.g. grammy from the telegram

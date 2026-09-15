@@ -219,6 +219,8 @@ export type ChannelGroupItem = {
   defaultAccountId: string;
   status: ChannelRuntimeStatus;
   statusReason?: string;
+  /** i18n key under channels.health.reasons, shown even when connected. */
+  statusNote?: string;
   accounts: ChannelAccountItem[];
 };
 export type ChannelTargetOption = {
@@ -285,6 +287,22 @@ export type ChannelSaveConfigResult = HostSuccess & {
   /** Configuration is committed; a guarded Gateway restart is continuing asynchronously. */
   activationPending?: boolean;
   warning?: string;
+};
+export type DingTalkWorkspaceAuthStatus =
+  | 'authorized'
+  | 'needs_auth'
+  | 'unavailable'
+  | 'starting'
+  | 'pending'
+  | 'error';
+export type DingTalkWorkspaceAuthResult = HostSuccess & {
+  status: DingTalkWorkspaceAuthStatus;
+  verificationUri?: string;
+  verificationUriComplete?: string;
+  userCode?: string;
+  expiresAt?: number;
+  /** Stable Main-owned error code; Renderer localizes it. */
+  errorCode?: string;
 };
 export type ChannelConfiguredResult = HostSuccess & { channels?: Array<string | JsonRecord> };
 
@@ -976,6 +994,10 @@ export type HostApiContract = {
     deleteConfig: (payload: ChannelAccountPayload) => HostSuccess;
     startLogin: (payload: ChannelAccountPayload) => HostSuccess;
     cancelLogin: (payload: ChannelAccountPayload) => HostSuccess;
+    dingtalkWorkspaceAuthStart: (payload: ChannelAccountPayload) => DingTalkWorkspaceAuthResult;
+    dingtalkWorkspaceAuthStatus: (payload: ChannelAccountPayload) => DingTalkWorkspaceAuthResult;
+    dingtalkWorkspaceAuthCancel: (payload: ChannelAccountPayload) => DingTalkWorkspaceAuthResult;
+    dingtalkWorkspaceAuthReset: (payload: ChannelAccountPayload) => DingTalkWorkspaceAuthResult;
   };
   agents: {
     list: () => AgentSnapshotResult;
